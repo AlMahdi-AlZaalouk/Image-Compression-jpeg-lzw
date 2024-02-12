@@ -1,0 +1,406 @@
+classdef ImageCompressionApp < matlab.apps.AppBase
+
+    % Properties that correspond to app components
+    properties (Access = public)
+        UIFigure                      matlab.ui.Figure
+        CompressionAlgorithmDropdown  matlab.ui.control.DropDown
+        SelectmethodeLabel            matlab.ui.control.Label
+        CompressionSize               matlab.ui.control.Label
+        CompressedfilesizeLabel       matlab.ui.control.Label
+        OriginSize                    matlab.ui.control.Label
+        OriginalImageSizeLabel        matlab.ui.control.Label
+        LoadCustomImageButton         matlab.ui.control.Button
+        ImageAxes_2                   matlab.ui.control.UIAxes
+        ImageAxes                     matlab.ui.control.UIAxes
+    end
+
+    
+    properties (Access = public)
+        lastLoadedImagePath
+    end
+    methods (Access = private)
+
+        function CompressionAlgorithmDropdownValueChanged(app,~)
+        cla(app.ImageAxes);
+    cla(app.ImageAxes_2);
+    
+    app.OriginSize.Text = '0.0 KB';
+    app.CompressionSize.Text = '0.0 KB';
+
+    if ~isempty(app.lastLoadedImagePath) && isfile(app.lastLoadedImagePath)
+        updateImage(app, app.lastLoadedImagePath);
+    end
+    end
+
+    end
+    
+    methods (Access = private)
+    function codes = generateHuffmanCodes(~, tree)
+        codes = {}; 
+    function traverse(node, path)
+        if isempty(node.symbol)
+            traverse(node.left, [path, 0]);
+            traverse(node.right, [path, 1]);
+        else
+            codes{end+1, 1} = node.symbol;
+            codes{end, 2} = path;
+        end
+    end
+    traverse(tree, []);
+    end
+end
+
+        
+    methods (Access = private)
+ 
+        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+        function updateImage(app,imagefile)
+            
+            if strcmp(imagefile,'corn.tif')
+               im = imread("corn.tif", 2);            
+            else
+                try
+                    im = imread(imagefile);
+                catch ME
+                    uialert(app.UIFigure,ME.message,"Image Error");
+                    return;
+                end            
+            end
+            imagesc(app.ImageAxes,im);
+            fileInfo = dir(imagefile);
+    if isempty(fileInfo)
+        uialert(app.UIFigure, 'File not found.', 'File Error');
+        return;
+    end
+    originalImageSize = fileInfo(1).bytes; 
+    app.OriginSize.Text = [num2str(originalImageSize/1024, '%.2f') ' KB'];
+            CompressImage(app,im,4);
+         
+        end
+
+    function CompressImage(app, im, bitDepth)  
+    selectedAlgorithm = app.CompressionAlgorithmDropdown.Value;
+    switch selectedAlgorithm
+        case 'JPEG Compression'
+            quantizedImage = jpegCompressImage(app,im,bitDepth);
+        case 'Quantization Compression'
+            quantizedImage = app.lossyCompressImage(im, bitDepth);
+        case 'LZW Compression'
+            lzwCompression(app,im);
+            
+    end
+
+    if exist('quantizedImage', 'var')
+        tempFileName = tempname;  
+        imwrite(quantizedImage, [tempFileName, '.jpg']);
+        info = dir([tempFileName, '.jpg']);
+        compressedImageSize = info.bytes; 
+        app.CompressionSize.Text = [num2str(compressedImageSize/1024, '%.2f') ' KB'];
+        delete([tempFileName, '.jpg']);
+        imagesc(app.ImageAxes_2, quantizedImage);
+    end
+end
+
+    %%%%%%%%%%%%%%%%%%%% quantized %%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+    function quantizedImage = lossyCompressImage(~,grayscaleImage, bitDepth)
+        image = double(grayscaleImage);
+        scale = 2^(8 - bitDepth);
+   
+        quantizedImage = floor(image / scale) * scale;
+        quantizedImage = uint8(quantizedImage);
+    end 
+%%%%%%%%%%%%%%%%%%%% GPEG %%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+function imcompression = jpegCompressImage(app, originImage, qualityFactor)
+    ycbcrImage = rgb2ycbcr(originImage);
+    
+    Cb = ycbcrImage(:, :, 2);
+    Cr = ycbcrImage(:, :, 3);
+    Cb_subsampled = Cb(1:2:end, 1:2:end);
+    Cr_subsampled = Cr(1:2:end, 1:2:end);
+    
+    Y = double(ycbcrImage(:, :, 1));
+    
+    Q = defineQuantizationMatrix(app,qualityFactor);
+    
+    reconstructedY = zeros(size(Y));
+    
+    for i = 1:8:size(Y, 1)-7
+        for j = 1:8:size(Y, 2)-7
+            block = Y(i:i+7, j:j+7);
+            dctBlock = dct2(block - 128);
+            quantizedBlock = round(dctBlock ./ Q);
+            
+            dequantizedBlock = quantizedBlock .* Q;
+            idctBlock = idct2(dequantizedBlock) + 128;
+            
+            reconstructedY(i:i+7, j:j+7) = idctBlock;
+        end
+    end
+    
+    Cb_upsampled = imresize(Cb_subsampled, [size(reconstructedY, 1), size(reconstructedY, 2)], 'bilinear');
+    Cr_upsampled = imresize(Cr_subsampled, [size(reconstructedY, 1), size(reconstructedY, 2)], 'bilinear');
+
+    reconstructedImage = cat(3, reconstructedY, Cb_upsampled, Cr_upsampled);
+    
+    reconstructedImage = ycbcr2rgb(uint8(reconstructedImage));
+    imcompression = reconstructedImage;
+%    imwrite(reconstructedImage, 'compressedJpegImage.jpg', 'Quality', qualityFactor);
+end
+
+function Q = defineQuantizationMatrix(~,qualityFactor)
+    Q = [ 16 11 10 16 24 40 51 61;
+          12 12 14 19 26 58 60 55;
+          14 13 16 24 40 57 69 56;
+          14 17 22 29 51 87 80 62;
+          18 22 37 56 68 109 103 77;
+          24 35 55 64 81 104 113 92;
+          49 64 78 87 103 121 120 101;
+          72 92 95 98 112 100 103 99 ];
+    
+    if qualityFactor < 50
+        Q = Q * (50 / qualityFactor);
+    else
+        Q = Q * (2 - (qualityFactor / 50));
+    end
+end
+    function zigzagOrdered = zigzagOrdering(~,block)
+    zigzagPattern = [
+        1,  2,  6,  7, 15, 16, 28, 29;
+        3,  5,  8, 14, 17, 27, 30, 43;
+        4,  9, 13, 18, 26, 31, 42, 44;
+       10, 12, 19, 25, 32, 41, 45, 54;
+       11, 20, 24, 33, 40, 46, 53, 55;
+       21, 23, 34, 39, 47, 52, 56, 61;
+       22, 35, 38, 48, 51, 57, 60, 62;
+       36, 37, 49, 50, 58, 59, 63, 64
+    ];
+
+    zigzagOrdered = block(zigzagPattern);
+end
+function huffmanCodedBlock = huffmanCoding(~,zigzagBlock)
+    huffmanCodedBlock = zigzagBlock;
+end
+
+
+%%%%%%%%%%%%%%%%%%%% LZW %%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+function lzwCompression(app,image)
+imageStream = imgToStream(app,image);
+
+compressedStream = lzwCompress(app,imageStream);
+        tempFileName = tempname;  
+        imwrite(compressedStream, tempFileName);
+        info = dir(tempFileName);
+        compressedImageSize = info.bytes; 
+        app.CompressionSize.Text = [num2str(compressedImageSize/1024, '%.2f') ' KB'];
+        delete(tempFileName);
+        imagesc(app.ImageAxes_2, compressedStream);
+end
+
+function compressedStream = imgToStream(app,image)
+rgbImage = image;
+
+YCbCrImage = rgb2ycbcr(rgbImage);
+
+[indexedImage, ~] = rgb2ind(YCbCrImage, 256);
+imageStream = indexedImage(:)';
+compressedStream = lzwCompress(app,imageStream);
+end
+
+function codeStream = lzwCompress(~, imageStream)
+    dictSize = 256; 
+    dictionary = num2cell(0:dictSize-1); 
+
+    codeStream = [];
+    w = [];
+
+    for pixelValue = imageStream
+        k = pixelValue; 
+        wk = [w, k]; 
+        
+        if any(cellfun(@(d) isequal(d, wk), dictionary))
+            w = wk;
+        else
+            index = find(cellfun(@(d) isequal(d, w), dictionary));
+            if ~isempty(index)
+                codeStream(end+1) = index;
+            end
+            
+            dictionary{end+1} = wk;
+            
+            w = k;
+        end
+    end
+    
+    index = find(cellfun(@(d) isequal(d, w), dictionary));
+    if ~isempty(index)
+        codeStream(end+1) = index;
+    end
+end
+
+
+
+    end
+
+    % Callbacks that handle component events
+    methods (Access = private)
+
+        % Code that executes after component creation
+        function startupFcn(app)
+            app.ImageAxes.Visible = "off";
+            app.ImageAxes.Colormap = gray(256);
+            axis(app.ImageAxes,"image");
+            axis(app.ImageAxes, 'on');
+            app.ImageAxes_2.Visible = "off";
+            app.ImageAxes_2.Colormap = gray(256);
+            axis(app.ImageAxes_2, 'image');
+            axis(app.ImageAxes_2, 'on');
+
+            
+            app.CompressionAlgorithmDropdown.Items = {'JPEG Compression', 'Quantization Compression', 'LZW Compression'};
+            app.CompressionAlgorithmDropdown.Position = [399,95,225,22];
+            app.CompressionAlgorithmDropdown.ValueChangedFcn = createCallbackFcn(app, @CompressionAlgorithmDropdownValueChanged, true);
+        end
+
+        % Button pushed function: LoadCustomImageButton
+        function LoadCustomImageButtonPushed(app, event)
+            filterspec = {'*.jpg;*.tif;*.png;*.gif','All Image Files'};
+            [file, path] = uigetfile(filterspec);
+            
+            if (ischar(path))
+               fname = fullfile(path, file);
+               app.lastLoadedImagePath = fname;
+               updateImage(app, fname);
+            end
+        end
+
+        % Value changed function: CompressionAlgorithmDropdown
+        function CompressionAlgorithmDropdownValueChanged2(app, event)
+    app.CompressionAlgorithmDropdown.ValueChangedFcn = createCallbackFcn(app, @CompressionAlgorithmDropdownValueChanged, true);
+        end
+
+        % Callback function
+        function ButtonPushed(app, event)
+            
+        end
+
+        % Callback function
+        function ButtonPushed2(app, event)
+            
+        end
+    end
+
+    % Component initialization
+    methods (Access = private)
+
+        % Create UIFigure and components
+        function createComponents(app)
+
+            % Create UIFigure and hide until all components are created
+            app.UIFigure = uifigure('Visible', 'off');
+            app.UIFigure.Position = [100 100 1067 710];
+            app.UIFigure.Name = 'Image Compression';
+            app.UIFigure.Scrollable = 'on';
+            app.UIFigure.WindowStyle = 'modal';
+
+            % Create ImageAxes
+            app.ImageAxes = uiaxes(app.UIFigure);
+            app.ImageAxes.XTick = [];
+            app.ImageAxes.XTickLabelRotation = 0;
+            app.ImageAxes.XTickLabel = {'[ ]'};
+            app.ImageAxes.YTick = [];
+            app.ImageAxes.YTickLabelRotation = 0;
+            app.ImageAxes.ZTickLabelRotation = 0;
+            app.ImageAxes.Position = [26 185 493 476];
+
+            % Create ImageAxes_2
+            app.ImageAxes_2 = uiaxes(app.UIFigure);
+            app.ImageAxes_2.XTick = [];
+            app.ImageAxes_2.XTickLabelRotation = 0;
+            app.ImageAxes_2.XTickLabel = {'[ ]'};
+            app.ImageAxes_2.YTick = [];
+            app.ImageAxes_2.YTickLabelRotation = 0;
+            app.ImageAxes_2.ZTickLabelRotation = 0;
+            app.ImageAxes_2.Position = [552 185 498 476];
+
+            % Create LoadCustomImageButton
+            app.LoadCustomImageButton = uibutton(app.UIFigure, 'push');
+            app.LoadCustomImageButton.ButtonPushedFcn = createCallbackFcn(app, @LoadCustomImageButtonPushed, true);
+            app.LoadCustomImageButton.FontSize = 18;
+            app.LoadCustomImageButton.Position = [399 43 225 48];
+            app.LoadCustomImageButton.Text = 'Load Custom Image';
+
+            % Create OriginalImageSizeLabel
+            app.OriginalImageSizeLabel = uilabel(app.UIFigure);
+            app.OriginalImageSizeLabel.FontSize = 14;
+            app.OriginalImageSizeLabel.FontWeight = 'bold';
+            app.OriginalImageSizeLabel.Position = [92 142 143 28];
+            app.OriginalImageSizeLabel.Text = 'Original Image  Size:';
+
+            % Create OriginSize
+            app.OriginSize = uilabel(app.UIFigure);
+            app.OriginSize.HorizontalAlignment = 'center';
+            app.OriginSize.FontSize = 18;
+            app.OriginSize.Position = [243 142 171 28];
+            app.OriginSize.Text = '0.0';
+
+            % Create CompressedfilesizeLabel
+            app.CompressedfilesizeLabel = uilabel(app.UIFigure);
+            app.CompressedfilesizeLabel.FontSize = 14;
+            app.CompressedfilesizeLabel.FontWeight = 'bold';
+            app.CompressedfilesizeLabel.Position = [647 142 157 28];
+            app.CompressedfilesizeLabel.Text = 'Compressed file size:';
+
+            % Create CompressionSize
+            app.CompressionSize = uilabel(app.UIFigure);
+            app.CompressionSize.HorizontalAlignment = 'center';
+            app.CompressionSize.FontSize = 18;
+            app.CompressionSize.Position = [803 142 147 28];
+            app.CompressionSize.Text = '0.0';
+
+            % Create SelectmethodeLabel
+            app.SelectmethodeLabel = uilabel(app.UIFigure);
+            app.SelectmethodeLabel.HorizontalAlignment = 'right';
+            app.SelectmethodeLabel.Position = [303 95 82 22];
+            app.SelectmethodeLabel.Text = 'Select method';
+
+            % Create CompressionAlgorithmDropdown
+            app.CompressionAlgorithmDropdown = uidropdown(app.UIFigure);
+            app.CompressionAlgorithmDropdown.ValueChangedFcn = createCallbackFcn(app, @CompressionAlgorithmDropdownValueChanged2, true);
+            app.CompressionAlgorithmDropdown.Position = [399 95 225 22];
+
+            % Show the figure after all components are created
+            app.UIFigure.Visible = 'on';
+        end
+    end
+
+    % App creation and deletion
+    methods (Access = public)
+
+        % Construct app
+        function app = ImageCompressionApp
+
+            % Create UIFigure and components
+            createComponents(app)
+
+            % Register the app with App Designer
+            registerApp(app, app.UIFigure)
+
+            % Execute the startup function
+            runStartupFcn(app, @startupFcn)
+
+            if nargout == 0
+                clear app
+            end
+        end
+
+        % Code that executes before app deletion
+        function delete(app)
+
+            % Delete UIFigure when app is deleted
+            delete(app.UIFigure)
+        end
+    end
+end
