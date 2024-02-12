@@ -113,28 +113,38 @@ end
 %%%%%%%%%%%%%%%%%%%% GPEG %%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 function imcompression = jpegCompressImage(app, originImage, qualityFactor)
+    % Convert the image to YCbCr color space
     ycbcrImage = rgb2ycbcr(originImage);
     
+    % Subsample the Cb and Cr components by a factor of 2
     Cb = ycbcrImage(:, :, 2);
     Cr = ycbcrImage(:, :, 3);
     Cb_subsampled = Cb(1:2:end, 1:2:end);
     Cr_subsampled = Cr(1:2:end, 1:2:end);
     
+    % Process the Y component for compression (luminance)
     Y = double(ycbcrImage(:, :, 1));
     
+    % Define and adjust the quantization matrix based on the quality factor
     Q = defineQuantizationMatrix(app,qualityFactor);
     
+    % Initialize the reconstructed image array
     reconstructedY = zeros(size(Y));
     
     for i = 1:8:size(Y, 1)-7
         for j = 1:8:size(Y, 2)-7
+            % Process each 8x8 block (demonstrated in the previous steps)
+            % (DCT, quantization, zigzag ordering, and Huffman coding)
+            % For simplicity, let's directly reconstruct from quantized blocks
             block = Y(i:i+7, j:j+7);
             dctBlock = dct2(block - 128);
             quantizedBlock = round(dctBlock ./ Q);
             
+            % De-quantization and inverse DCT
             dequantizedBlock = quantizedBlock .* Q;
             idctBlock = idct2(dequantizedBlock) + 128;
             
+            % Store the reconstructed block
             reconstructedY(i:i+7, j:j+7) = idctBlock;
         end
     end
@@ -142,14 +152,17 @@ function imcompression = jpegCompressImage(app, originImage, qualityFactor)
     Cb_upsampled = imresize(Cb_subsampled, [size(reconstructedY, 1), size(reconstructedY, 2)], 'bilinear');
     Cr_upsampled = imresize(Cr_subsampled, [size(reconstructedY, 1), size(reconstructedY, 2)], 'bilinear');
 
+    % Concatenate the Y, upsampled Cb, and upsampled Cr components
     reconstructedImage = cat(3, reconstructedY, Cb_upsampled, Cr_upsampled);
     
+    % Convert the concatenated YCbCr image back to RGB color space
     reconstructedImage = ycbcr2rgb(uint8(reconstructedImage));
     imcompression = reconstructedImage;
-%    imwrite(reconstructedImage, 'compressedJpegImage.jpg', 'Quality', qualityFactor);
+%    imwrite(reconstructedImage, '/MATLAB Drive/IT-Assignments/compressedJpegImage.jpg', 'Quality', qualityFactor);
 end
 
 function Q = defineQuantizationMatrix(~,qualityFactor)
+    % Initialize the standard quantization matrix
     Q = [ 16 11 10 16 24 40 51 61;
           12 12 14 19 26 58 60 55;
           14 13 16 24 40 57 69 56;
@@ -159,6 +172,7 @@ function Q = defineQuantizationMatrix(~,qualityFactor)
           49 64 78 87 103 121 120 101;
           72 92 95 98 112 100 103 99 ];
     
+    % Scale the quantization matrix based on quality factor
     if qualityFactor < 50
         Q = Q * (50 / qualityFactor);
     else
@@ -166,6 +180,7 @@ function Q = defineQuantizationMatrix(~,qualityFactor)
     end
 end
     function zigzagOrdered = zigzagOrdering(~,block)
+    % Initialize the zigzag index order from a predefined pattern
     zigzagPattern = [
         1,  2,  6,  7, 15, 16, 28, 29;
         3,  5,  8, 14, 17, 27, 30, 43;
@@ -177,6 +192,7 @@ end
        36, 37, 49, 50, 58, 59, 63, 64
     ];
 
+    % Reorder the block elements according to the zigzag pattern
     zigzagOrdered = block(zigzagPattern);
 end
 function huffmanCodedBlock = huffmanCoding(~,zigzagBlock)
@@ -187,6 +203,7 @@ end
 %%%%%%%%%%%%%%%%%%%% LZW %%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 function lzwCompression(app,image)
+    % Read an RGB image
 imageStream = imgToStream(app,image);
 
 compressedStream = lzwCompress(app,imageStream);
@@ -200,40 +217,49 @@ compressedStream = lzwCompress(app,imageStream);
 end
 
 function compressedStream = imgToStream(app,image)
+    % Read an RGB image
 rgbImage = image;
 
+% Convert to YCbCr color space (optional step for compression, but sometimes used before compression)
 YCbCrImage = rgb2ycbcr(rgbImage);
 
+% Flatten the image data into a 1D stream. This example assumes an indexed image.
 [indexedImage, ~] = rgb2ind(YCbCrImage, 256);
 imageStream = indexedImage(:)';
 compressedStream = lzwCompress(app,imageStream);
 end
 
 function codeStream = lzwCompress(~, imageStream)
-    dictSize = 256; 
-    dictionary = num2cell(0:dictSize-1); 
+    % Initialize the dictionary with all possible values in the image stream
+    dictSize = 256; % Assuming 8-bit color depth
+    dictionary = num2cell(0:dictSize-1); % Cell array of numbers
 
+    % Initialize variables
     codeStream = [];
-    w = [];
+    w = []; % Initialize as empty
 
     for pixelValue = imageStream
-        k = pixelValue; 
-        wk = [w, k]; 
+        k = pixelValue; % Keep pixel value as number
+        wk = [w, k]; % Concatenate numbers
         
         if any(cellfun(@(d) isequal(d, wk), dictionary))
             w = wk;
         else
+            % Output the code for w
             index = find(cellfun(@(d) isequal(d, w), dictionary));
             if ~isempty(index)
                 codeStream(end+1) = index;
             end
             
-            dictionary{end+1} = wk;
+            % Add wk to the dictionary
+            dictionary{end+1} = wk; % Add wk as a sequence of numbers
             
+            % k becomes the new w
             w = k;
         end
     end
     
+    % Output the code for w
     index = find(cellfun(@(d) isequal(d, w), dictionary));
     if ~isempty(index)
         codeStream(end+1) = index;
